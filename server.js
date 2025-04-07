@@ -72,7 +72,7 @@ app.post('/upload', upload.array('files'), async (req, res) => {
 
     sessions[sessionId] = {
       zipPath,
-      expiresAt: Date.now() + 24 * 60 * 60 * 1000 // valid for 24 hours
+      expiresAt: Date.now() + 30 * 60 * 1000 // valid for 30 minutes
     };
 
     res.json({ code: sessionId, message: 'Files uploaded successfully' });
