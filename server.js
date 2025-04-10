@@ -53,6 +53,7 @@ const createZip = (folderPath, zipPath) => {
 }
 
 
+
 // Upload Endpoint
 app.post('/upload', upload.array('files'), async (req, res) => {
 const sessionId = req.headers['x-session-id'] || generateCode();
@@ -71,10 +72,10 @@ const zipPath = path.join(__dirname, 'uploads', ${sessionId}.zip);
 try {
 await createZip(uploadDir, zipPath);
 
-sessions[sessionId] = {  
-  zipPath,  
-  expiresAt: Date.now() + 30 * 60 * 1000 // valid for 30 minutes  
-};  
+sessions[sessionId] = {
+zipPath,
+expiresAt: Date.now() + 30 * 60 * 1000 // valid for 30 minutes
+};
 
 res.json({ code: sessionId, message: 'Files uploaded successfully' });
 
@@ -82,6 +83,7 @@ res.json({ code: sessionId, message: 'Files uploaded successfully' });
 res.status(500).json({ message: 'Failed to zip and store files.' });
 }
 });
+
 
 
 
