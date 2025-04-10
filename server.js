@@ -52,69 +52,38 @@ const createZip = (folderPath, zipPath) => {
   });
 }
 
+
 // Upload Endpoint
 app.post('/upload', upload.array('files'), async (req, res) => {
-  const sessionId = req.headers['x-session-id'] || generateCode();
-  const uploadDir = path.join(__dirname, 'uploads', sessionId);
-  fs.mkdirSync(uploadDir, { recursive: true });
+const sessionId = req.headers['x-session-id'] || generateCode();
+const uploadDir = path.join(__dirname, 'uploads', sessionId);
+fs.mkdirSync(uploadDir, { recursive: true });
 
-  const uploadedFiles = req.files || [];
+// Save note
+if (req.body.text || req.body.link) {
+const textContent = req.body.text || '';
+const linkContent = req.body.link ? Link: ${req.body.link} : '';
+fs.writeFileSync(path.join(uploadDir, 'note.txt'), ${textContent}\n${linkContent});
+}
 
-  // Save note if exists
-  if (req.body.text || req.body.link) {
-    const textContent = req.body.text || '';
-    const linkContent = req.body.link ? `Link: ${req.body.link}` : '';
-    fs.writeFileSync(path.join(uploadDir, 'note.txt'), `${textContent}\n${linkContent}`);
-  }
+const zipPath = path.join(__dirname, 'uploads', ${sessionId}.zip);
 
-  try {
-    let totalSize = 0;
-    uploadedFiles.forEach(file => totalSize += file.size);
+try {
+await createZip(uploadDir, zipPath);
 
-    let responsePayload = {
-      code: sessionId,
-      message: 'Files uploaded successfully'
-    };
+sessions[sessionId] = {  
+  zipPath,  
+  expiresAt: Date.now() + 30 * 60 * 1000 // valid for 30 minutes  
+};  
 
-    if (totalSize > 50 * 1024 * 1024) {
-      // Move files and return direct links
-      const fileLinks = [];
-      for (const file of uploadedFiles) {
-        const newPath = path.join(uploadDir, file.originalname);
-        fs.renameSync(file.path, newPath);
-        fileLinks.push(`https://airbridge-backend.onrender.com/uploads/${sessionId}/${encodeURIComponent(file.originalname)}`);
-      }
+res.json({ code: sessionId, message: 'Files uploaded successfully' });
 
-      sessions[sessionId] = {
-        directLinks: fileLinks,
-        expiresAt: Date.now() + 30 * 60 * 1000
-      };
-
-      responsePayload.directLinks = fileLinks;
-    } else {
-      // Move and zip files
-      for (const file of uploadedFiles) {
-        const newPath = path.join(uploadDir, file.originalname);
-        fs.renameSync(file.path, newPath);
-      }
-
-      const zipPath = path.join(__dirname, 'uploads', `${sessionId}.zip`);
-      await createZip(uploadDir, zipPath);
-
-      sessions[sessionId] = {
-        zipPath,
-        expiresAt: Date.now() + 30 * 60 * 1000
-      };
-
-      responsePayload.downloadUrl = `https://airbridge-backend.onrender.com/download/${sessionId}`;
-    }
-
-    res.json(responsePayload);
-  } catch (err) {
-    console.error('Upload error:', err);
-    res.status(500).json({ message: 'Failed to process upload.' });
-  }
+} catch (err) {
+res.status(500).json({ message: 'Failed to zip and store files.' });
+}
 });
+
+
 
 
 // Get QR Code for a code
