@@ -25,6 +25,10 @@ const generateCode = () => {
 // Function to login to MEGA
 const loginToMega = ({ email, password }) => {
   return new Promise((resolve, reject) => {
+    if (!email || !password) {
+      return reject(new Error("Missing MEGA credentials"));
+    }
+
     const storage = mega({ email, password }, err => {
       if (err) return reject(err);
       resolve(storage);
