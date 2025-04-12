@@ -49,34 +49,62 @@ const createZip = (folderPath, zipPath) => {
   });
 };
 
+
 // Upload Endpoint
-app.post('/upload', upload.array('files'), async (req, res) => {
+app.post('/upload', (req, res, next) => {
+  const contentType = req.headers['content-type'];
+
+  if (contentType && contentType.startsWith('multipart/form-data')) {
+    // Use multer only if files are uploaded
+    upload.any()(req, res, async (err) => {
+      if (err instanceof multer.MulterError) {
+        return res.status(400).json({ message: 'Upload failed', error: err.message });
+      }
+      return handleUpload(req, res);
+    });
+  } else {
+    // No files, just text or link
+    express.urlencoded({ extended: true })(req, res, () => handleUpload(req, res));
+  }
+});
+
+async function handleUpload(req, res) {
   const sessionId = req.headers['x-session-id'] || generateCode();
   const uploadDir = path.join(__dirname, 'uploads', sessionId);
   fs.mkdirSync(uploadDir, { recursive: true });
 
-  // Save note
-  if (req.body.text || req.body.link) {
-    const textContent = req.body.text || '';
-    const linkContent = req.body.link ? `Link: ${req.body.link}` : '';
-    fs.writeFileSync(path.join(uploadDir, 'note.txt'), `${textContent}\n${linkContent}`);
+  // Save text or link if provided
+  const text = req.body.text || '';
+  const link = req.body.link ? `Link: ${req.body.link}` : '';
+  if (text || link) {
+    fs.writeFileSync(path.join(uploadDir, 'note.txt'), `${text}\n${link}`);
+  }
+
+  // Save uploaded files if any
+  if (req.files && req.files.length > 0) {
+    for (const file of req.files) {
+      const dest = path.join(uploadDir, file.originalname);
+      fs.renameSync(file.path, dest);
+    }
   }
 
   const zipPath = path.join(__dirname, 'uploads', `${sessionId}.zip`);
 
   try {
     await createZip(uploadDir, zipPath);
-
     sessions[sessionId] = {
       zipPath,
-      expiresAt: Date.now() + 24 * 60 * 60 * 1000, // valid for 24 hours
+      expiresAt: Date.now() + 24 * 60 * 60 * 1000,
     };
 
-    res.json({ code: sessionId, message: 'Files uploaded successfully' });
+    res.json({ code: sessionId, message: 'Uploaded successfully' });
   } catch (err) {
     res.status(500).json({ message: 'Failed to zip and store files.' });
   }
-});
+}
+
+
+
 
 // Get QR Code for a code
 app.get('/qrcode/:code', async (req, res) => {
