@@ -8,7 +8,7 @@
   "keywords": [],
   "author": "",
   "license": "ISC",
-  "description": "",
+  "description": "", 
   "dependencies": {
     "archiver": "^7.0.1",
   "mega": "^0.2.0",
