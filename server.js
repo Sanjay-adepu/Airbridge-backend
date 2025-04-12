@@ -3,49 +3,50 @@ const multer = require('multer');
 const path = require('path');
 const fs = require('fs');
 const mega = require('mega');
-const archiver = require('archiver');
 const cors = require('cors');
 const QRCode = require('qrcode');
 
 const app = express();
 const PORT = process.env.PORT || 5000;
 
-app.use(cors({ origin: "https://airbridge-gamma.vercel.app", methods: ["GET", "POST"] }));
+// CORS
+app.use(cors({
+  origin: 'https://airbridge-gamma.vercel.app',
+  methods: ['GET', 'POST'],
+}));
+
 app.use(express.json());
 app.use(express.static('public'));
 
-// Temporary session memory
+// Store temporary sessions in memory
 const sessions = {};
 
-// Function to generate download codes
-const generateCode = () => {
-  return Math.random().toString(36).substring(2, 8).toUpperCase();
-};
+// Generate unique code
+const generateCode = () => Math.random().toString(36).substring(2, 8).toUpperCase();
 
-// Function to login to MEGA
+// Login to MEGA
 const loginToMega = ({ email, password }) => {
   return new Promise((resolve, reject) => {
-    if (!email || !password) {
-      return reject(new Error("Missing MEGA credentials"));
-    }
-
     const storage = mega({ email, password }, err => {
-      if (err) return reject(err);
+      if (err) {
+        console.error('MEGA login failed:', err);
+        return reject(err);
+      }
       resolve(storage);
     });
   });
 };
 
-// Upload Endpoint
+// Upload route
 app.post('/upload', multer().array('files'), async (req, res) => {
   const sessionId = req.headers['x-session-id'] || generateCode();
   const uploadDir = path.join(__dirname, 'uploads', sessionId);
   fs.mkdirSync(uploadDir, { recursive: true });
 
+  // Save text or link
   if (req.body.text || req.body.link) {
-    const textContent = req.body.text || '';
-    const linkContent = req.body.link ? `Link: ${req.body.link}` : '';
-    fs.writeFileSync(path.join(uploadDir, 'note.txt'), `${textContent}\n${linkContent}`);
+    const content = `${req.body.text || ''}\n${req.body.link ? `Link: ${req.body.link}` : ''}`;
+    fs.writeFileSync(path.join(uploadDir, 'note.txt'), content);
   }
 
   try {
@@ -54,15 +55,20 @@ app.post('/upload', multer().array('files'), async (req, res) => {
       password: 'Sanjay444@'
     });
 
-    const files = req.files;
-    const fileUploadPromises = files.map((file) => {
+    const files = req.files || [];
+    const fileUploadPromises = files.map(file => {
       return new Promise((resolve, reject) => {
-        const uploadStream = megaClient.upload({ name: file.originalname, size: file.size }, err => {
-          if (err) return reject(err);
+        const uploadStream = megaClient.upload(file.originalname, file.size);
+        uploadStream.end(file.buffer);
+
+        uploadStream.on('complete', (fileInfo) => {
+          resolve({
+            name: fileInfo.name,
+            handle: fileInfo.file,
+            downloadUrl: `https://mega.nz/file/${fileInfo.file}`
+          });
         });
 
-        uploadStream.end(file.buffer);
-        uploadStream.on('complete', resolve);
         uploadStream.on('error', reject);
       });
     });
@@ -71,28 +77,31 @@ app.post('/upload', multer().array('files'), async (req, res) => {
 
     sessions[sessionId] = {
       uploadedFiles,
-      expiresAt: Date.now() + 30 * 60 * 1000, // valid for 30 minutes
+      expiresAt: Date.now() + 30 * 60 * 1000, // 30 minutes
     };
 
     res.json({ code: sessionId, message: 'Files uploaded successfully' });
   } catch (err) {
-    console.error(err);
+    console.error('Upload failed:', err);
     res.status(500).json({ message: 'Failed to upload files to MEGA.' });
   }
 });
 
-// Get QR Code
+// QR Code route
 app.get('/qrcode/:code', async (req, res) => {
-  const { code } = req.params;
+  const code = req.params.code;
   const url = `https://airbridge-backend.onrender.com/download/${code}`;
-  const qr = await QRCode.toDataURL(url);
-  res.json({ qr });
+  try {
+    const qr = await QRCode.toDataURL(url);
+    res.json({ qr });
+  } catch (err) {
+    res.status(500).json({ message: 'Failed to generate QR code' });
+  }
 });
 
-// Download endpoint
+// Download route
 app.get('/download/:code', (req, res) => {
-  const code = req.params.code;
-  const session = sessions[code];
+  const session = sessions[req.params.code];
 
   if (!session || Date.now() > session.expiresAt) {
     return res.status(404).json({ message: 'Invalid or expired code' });
@@ -100,13 +109,13 @@ app.get('/download/:code', (req, res) => {
 
   const fileLinks = session.uploadedFiles.map(file => ({
     name: file.name,
-    link: file.downloadUrl || `https://mega.nz/file/${file.handle}`
+    link: file.downloadUrl
   }));
 
   res.json({ files: fileLinks });
 });
 
-// Cleanup expired sessions every 10 minutes
+// Cleanup expired sessions every 10 mins
 setInterval(() => {
   for (let code in sessions) {
     if (Date.now() > sessions[code].expiresAt) {
@@ -115,6 +124,7 @@ setInterval(() => {
   }
 }, 10 * 60 * 1000);
 
+// Start server
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
 });
