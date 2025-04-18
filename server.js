@@ -6,23 +6,19 @@ const crypto = require('crypto');
 const archiver = require('archiver');
 const cors = require('cors');
 const QRCode = require('qrcode');
-const mega = require('mega');
+const { google } = require('googleapis');
 
 const app = express();
 const PORT = process.env.PORT || 5000;
 
-// MEGA credentials
-const megaEmail = 'adepusanjay444@gmail.com';
-const megaPassword = 'Sanjay444@';
+const SVC_ACCOUNT_PATH = path.join(__dirname, 'service-account.json');
 
 app.use(cors({ origin: "https://airbridge-gamma.vercel.app", methods: ["GET", "POST"] }));
 app.use(express.json());
 app.use(express.static('public'));
 
-// Memory store for sessions
 const sessions = {};
 
-// Helpers
 const generateCode = () => crypto.randomBytes(3).toString('hex').toUpperCase();
 
 const createZip = (folderPath, zipPath) => {
@@ -31,14 +27,11 @@ const createZip = (folderPath, zipPath) => {
     const archive = archiver('zip', { zlib: { level: 9 } });
 
     output.on('close', () => {
-      console.log(`Zip created successfully: ${zipPath} (${archive.pointer()} total bytes)`);
+      console.log(`Zip created: ${zipPath} (${archive.pointer()} bytes)`);
       resolve();
     });
 
-    archive.on('error', err => {
-      console.error('Archive error:', err);
-      reject(err);
-    });
+    archive.on('error', err => reject(err));
 
     archive.pipe(output);
     archive.directory(folderPath, false);
@@ -46,38 +39,59 @@ const createZip = (folderPath, zipPath) => {
   });
 };
 
-// Upload to MEGA
-const uploadToMega = (zipPath, sessionId, res) => {
-  mega({ email: megaEmail, password: megaPassword }, (err, storage) => {
-    if (err) {
-      console.error('MEGA login failed:', err);
-      return res.status(500).json({ message: 'Failed to log into MEGA' });
-    }
+// Authenticate with Google Drive
+const auth = new google.auth.GoogleAuth({
+  keyFile: SVC_ACCOUNT_PATH,
+  scopes: ['https://www.googleapis.com/auth/drive.file'],
+});
+const driveService = google.drive({ version: 'v3', auth });
 
-    const fileStream = fs.createReadStream(zipPath);
-    const uploadedFile = storage.upload(path.basename(zipPath), fileStream);
+// Upload to Google Drive
+const uploadToGoogleDrive = async (zipPath, sessionId, res) => {
+  try {
+    const fileMetadata = {
+      name: path.basename(zipPath),
+    };
+    const media = {
+      mimeType: 'application/zip',
+      body: fs.createReadStream(zipPath),
+    };
 
-    uploadedFile.on('complete', () => {
-      const megaFileUrl = uploadedFile.link;
-
-      sessions[sessionId] = {
-        zipPath,
-        megaFileUrl,
-        expiresAt: Date.now() + 30 * 60 * 1000,
-      };
-
-      res.json({
-        code: sessionId,
-        message: 'Files uploaded and zipped successfully',
-        megaFileUrl,
-      });
+    const result = await driveService.files.create({
+      resource: fileMetadata,
+      media,
+      fields: 'id',
     });
 
-    uploadedFile.on('error', err => {
-      console.error('MEGA upload failed:', err);
-      res.status(500).json({ message: 'Failed to upload file to MEGA' });
+    const fileId = result.data.id;
+
+    // Make file public
+    await driveService.permissions.create({
+      fileId,
+      requestBody: {
+        role: 'reader',
+        type: 'anyone',
+      },
     });
-  });
+
+    const downloadUrl = `https://drive.google.com/uc?id=${fileId}&export=download`;
+
+    sessions[sessionId] = {
+      zipPath,
+      googleDriveUrl: downloadUrl,
+      expiresAt: Date.now() + 30 * 60 * 1000,
+    };
+
+    res.json({
+      code: sessionId,
+      message: 'Files uploaded and zipped successfully',
+      googleDriveUrl: downloadUrl,
+    });
+
+  } catch (error) {
+    console.error('Google Drive upload error:', error);
+    res.status(500).json({ message: 'Failed to upload to Google Drive' });
+  }
 };
 
 // Multer setup
@@ -101,14 +115,12 @@ app.post('/upload', upload.array('files'), async (req, res) => {
   fs.mkdirSync(uploadDir, { recursive: true });
 
   try {
-    // Optional text + link note
     if (req.body.text || req.body.link) {
       const textContent = req.body.text || '';
       const linkContent = req.body.link ? `Link: ${req.body.link}` : '';
       fs.writeFileSync(path.join(uploadDir, 'note.txt'), `${textContent}\n${linkContent}`);
     }
 
-    // Check if files exist
     const uploadedFiles = fs.readdirSync(uploadDir);
     if (uploadedFiles.length === 0) {
       return res.status(400).json({ message: 'No files to zip.' });
@@ -117,8 +129,8 @@ app.post('/upload', upload.array('files'), async (req, res) => {
     const zipPath = path.join(__dirname, 'uploads', `${sessionId}.zip`);
     await createZip(uploadDir, zipPath);
 
-    console.log('Zipping completed. Starting MEGA upload...');
-    uploadToMega(zipPath, sessionId, res);
+    console.log('Zipping completed. Uploading to Google Drive...');
+    await uploadToGoogleDrive(zipPath, sessionId, res);
 
   } catch (err) {
     console.error('Upload error:', err);
@@ -136,14 +148,14 @@ app.get('/qrcode/:code', async (req, res) => {
   }
 
   try {
-    const qr = await QRCode.toDataURL(session.megaFileUrl);
+    const qr = await QRCode.toDataURL(session.googleDriveUrl);
     res.json({ qr });
   } catch (err) {
-    res.status(500).json({ message: 'Failed to generate QR code' });
+    res.status(500).json({ message: 'QR generation failed' });
   }
 });
 
-// Redirect to MEGA link
+// Redirect to Drive
 app.get('/download/:code', (req, res) => {
   const code = req.params.code;
   const session = sessions[code];
@@ -152,10 +164,10 @@ app.get('/download/:code', (req, res) => {
     return res.status(404).json({ message: 'Invalid or expired code' });
   }
 
-  res.redirect(session.megaFileUrl);
+  res.redirect(session.googleDriveUrl);
 });
 
-// Clean up expired sessions every 10 mins
+// Clean-up
 setInterval(() => {
   for (let code in sessions) {
     if (Date.now() > sessions[code].expiresAt) {
@@ -165,7 +177,7 @@ setInterval(() => {
         fs.rmSync(dir, { recursive: true, force: true });
         fs.unlinkSync(zip);
       } catch (e) {
-        console.warn(`Failed to clean up for session ${code}`, e);
+        console.warn(`Cleanup failed for session ${code}`, e);
       }
       delete sessions[code];
     }
