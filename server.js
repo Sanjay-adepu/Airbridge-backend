@@ -9,7 +9,10 @@ const streamifier = require('streamifier');
 const app = express();
 const PORT = process.env.PORT || 5000;
 
-app.use(cors());
+app.use(cors({
+  origin: ["https://airbridge-gamma.vercel.app", "http://localhost:5173"],
+  methods: ["GET", "POST"]
+}));
 app.use(express.json());
 
 cloudinary.config({
@@ -73,7 +76,7 @@ app.post('/upload', upload.array('files'), async (req, res) => {
 
 app.get('/qrcode/:code', async (req, res) => {
   const { code } = req.params;
-  const url = `https://your-frontend.vercel.app/download/${code}`;
+  const url = `https://airbridge-gamma.vercel.app/download/${code}`;
   const qr = await QRCode.toDataURL(url);
   res.json({ qr });
 });
