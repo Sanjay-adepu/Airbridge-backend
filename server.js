@@ -13,27 +13,15 @@ const PORT = process.env.PORT || 5000;
 // Setup
 app.use(cors());
 app.use(express.json());
-app.use(express.static('public'));
 
 // Memory store for uploaded sessions
 const sessions = {};
 
-// Storage for uploaded files
-const storage = multer.diskStorage({
-  destination: (req, file, cb) => {
-    const sessionId = req.headers['x-session-id'] || generateCode();
-    const uploadDir = path.join('/tmp/uploads', sessionId); // ✅ write to /tmp
-    fs.mkdirSync(uploadDir, { recursive: true });
-    cb(null, uploadDir);
-  },
-  filename: (req, file, cb) => cb(null, Date.now() + '-' + file.originalname),
-});
-
-
-const upload = multer({ storage });
-
 // Helpers
 const generateCode = () => crypto.randomBytes(3).toString('hex').toUpperCase();
+const getUploadDir = (sessionId) => path.join('/tmp/uploads', sessionId);
+const getZipPath = (sessionId) => path.join('/tmp/uploads', `${sessionId}.zip`);
+
 const createZip = (folderPath, zipPath) => {
   return new Promise((resolve, reject) => {
     const output = fs.createWriteStream(zipPath);
@@ -48,10 +36,23 @@ const createZip = (folderPath, zipPath) => {
   });
 };
 
+// Storage for uploaded files
+const storage = multer.diskStorage({
+  destination: (req, file, cb) => {
+    const sessionId = req.headers['x-session-id'] || generateCode();
+    const uploadDir = getUploadDir(sessionId);
+    fs.mkdirSync(uploadDir, { recursive: true });
+    cb(null, uploadDir);
+  },
+  filename: (req, file, cb) => cb(null, Date.now() + '-' + file.originalname),
+});
+
+const upload = multer({ storage });
+
 // Upload Endpoint
 app.post('/upload', upload.array('files'), async (req, res) => {
   const sessionId = req.headers['x-session-id'] || generateCode();
-  const uploadDir = path.join(__dirname, 'uploads', sessionId);
+  const uploadDir = getUploadDir(sessionId);
   fs.mkdirSync(uploadDir, { recursive: true });
 
   // Save note
@@ -61,18 +62,19 @@ app.post('/upload', upload.array('files'), async (req, res) => {
     fs.writeFileSync(path.join(uploadDir, 'note.txt'), `${textContent}\n${linkContent}`);
   }
 
-  const zipPath = path.join(__dirname, 'uploads', `${sessionId}.zip`);
+  const zipPath = getZipPath(sessionId);
 
   try {
     await createZip(uploadDir, zipPath);
 
     sessions[sessionId] = {
       zipPath,
-      expiresAt: Date.now() + 30 * 60 * 1000 // valid for 30 minutes
+      expiresAt: Date.now() + 30 * 60 * 1000, // valid for 30 minutes
     };
 
     res.json({ code: sessionId, message: 'Files uploaded successfully' });
   } catch (err) {
+    console.error('Zip Error:', err);
     res.status(500).json({ message: 'Failed to zip and store files.' });
   }
 });
@@ -100,8 +102,8 @@ app.get('/download/:code', (req, res) => {
 // Preview text or link
 app.get('/preview/:code', (req, res) => {
   const code = req.params.code;
-  const sessionDir = path.join(__dirname, 'uploads', code);
-  const textFile = path.join(sessionDir, 'note.txt'); // Changed from 'text.json' to 'note.txt'
+  const sessionDir = getUploadDir(code);
+  const textFile = path.join(sessionDir, 'note.txt');
 
   if (fs.existsSync(textFile)) {
     const data = fs.readFileSync(textFile, 'utf8');
@@ -111,12 +113,12 @@ app.get('/preview/:code', (req, res) => {
   return res.status(404).json({ message: 'No text or link found' });
 });
 
-// Cleanup expired sessions (optional: run every 10 mins)
+// Cleanup expired sessions (every 10 minutes)
 setInterval(() => {
   for (let code in sessions) {
     if (Date.now() > sessions[code].expiresAt) {
       const zip = sessions[code].zipPath;
-      const dir = path.join(__dirname, 'uploads', code);
+      const dir = getUploadDir(code);
       try {
         fs.rmSync(dir, { recursive: true, force: true });
         fs.unlinkSync(zip);
@@ -126,7 +128,7 @@ setInterval(() => {
       delete sessions[code];
     }
   }
-}, 10 * 60 * 1000); // Cleanup every 10 minutes
+}, 10 * 60 * 1000); // 10 minutes
 
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
