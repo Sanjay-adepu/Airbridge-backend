@@ -82,7 +82,7 @@ app.post('/upload', upload.array('files'), async (req, res) => {
 // Get QR Code for a code
 app.get('/qrcode/:code', async (req, res) => {
   const { code } = req.params;
-  const url = `https://airbridge-backend.onrender.com/download/${code}`;
+  const url = `https://airbridge-backend.vercel.app/download/${code}`;
   const qr = await QRCode.toDataURL(url);
   res.json({ qr });
 });
