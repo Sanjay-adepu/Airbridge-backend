@@ -5,7 +5,7 @@ const QRCode = require('qrcode');
 const { v4: uuidv4 } = require('uuid');
 
 const cloudinary = require('cloudinary').v2;
-const { CloudinaryStorage } = require('multer-storage-cloudinary');
+const { CloudinaryStorage } = require('multer-storage-cloudinary'); 
 
 // Cloudinary Configuration
 cloudinary.config({
