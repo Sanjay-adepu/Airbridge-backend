@@ -1,11 +1,29 @@
 const express = require('express');
 const multer = require('multer');
-const path = require('path');
-const fs = require('fs');
-const crypto = require('crypto');
-const archiver = require('archiver');
 const cors = require('cors');
 const QRCode = require('qrcode');
+const { v4: uuidv4 } = require('uuid');
+
+const cloudinary = require('cloudinary').v2;
+const { CloudinaryStorage } = require('multer-storage-cloudinary');
+
+// Cloudinary Configuration
+cloudinary.config({
+  cloud_name: "dg6eufdce",
+  api_key: "515743163455136",
+  api_secret: "0C88e38P3JqkVrIdwExy26xHe18"
+});
+
+// Multer Cloudinary Storage - allow all file types
+const storage = new CloudinaryStorage({
+  cloudinary: cloudinary,
+  params: async (req, file) => ({
+    folder: 'uploads',
+    resource_type: 'auto',
+    public_id: `${Date.now()}-${file.originalname}`,
+  }),
+});
+const upload = multer({ storage });
 
 const app = express();
 const PORT = process.env.PORT || 5000;
@@ -13,79 +31,35 @@ const PORT = process.env.PORT || 5000;
 app.use(cors());
 app.use(express.json());
 
-// Memory store for uploaded sessions
+// In-memory sessions
 const sessions = {};
-
-// Helpers
-const generateCode = () => crypto.randomBytes(3).toString('hex').toUpperCase();
-const getUploadDir = (sessionId) => path.join('/tmp/uploads', sessionId);
-const getZipPath = (sessionId) => path.join('/tmp/uploads', `${sessionId}.zip`);
-
-const createZip = (folderPath, zipPath) => {
-  return new Promise((resolve, reject) => {
-    const output = fs.createWriteStream(zipPath);
-    const archive = archiver('zip', { zlib: { level: 9 } });
-
-    archive.pipe(output);
-    archive.directory(folderPath, false);
-    archive.finalize();
-
-    output.on('close', () => resolve());
-    archive.on('error', err => reject(err));
-  });
-};
-
-// Storage for uploaded files
-const storage = multer.diskStorage({
-  destination: (req, file, cb) => {
-    const sessionId = req.headers['x-session-id'] || generateCode();
-    const uploadDir = getUploadDir(sessionId);
-    fs.mkdirSync(uploadDir, { recursive: true });
-    cb(null, uploadDir);
-  },
-  filename: (req, file, cb) => cb(null, Date.now() + '-' + file.originalname),
-});
-
-const upload = multer({ storage });
 
 // Upload Endpoint
 app.post('/upload', upload.array('files'), async (req, res) => {
-  let sessionId = req.headers['x-session-id'];
-  if (!sessionId) {
-    sessionId = generateCode(); // generate only if not provided
-  }
+  const sessionId = req.headers['x-session-id'] || uuidv4();
+  const uploadedFiles = req.files.map(file => ({
+    url: file.path,
+    type: file.mimetype,
+    name: file.originalname,
+  }));
 
-  const uploadDir = getUploadDir(sessionId);
-  fs.mkdirSync(uploadDir, { recursive: true });
+  const text = req.body.text || '';
+  const link = req.body.link || '';
 
-  if (req.body.text || req.body.link) {
-    const textContent = req.body.text || '';
-    const linkContent = req.body.link ? `Link: ${req.body.link}` : '';
-    fs.writeFileSync(path.join(uploadDir, 'note.txt'), `${textContent}\n${linkContent}`);
-  }
+  sessions[sessionId] = {
+    files: uploadedFiles,
+    text,
+    link,
+    expiresAt: Date.now() + 30 * 60 * 1000, // 30 minutes
+  };
 
-  const zipPath = getZipPath(sessionId);
-
-  try {
-    await createZip(uploadDir, zipPath);
-
-    sessions[sessionId] = {
-      zipPath,
-      expiresAt: Date.now() + 30 * 60 * 1000, // 30 minutes
-    };
-
-    res.json({ code: sessionId, message: 'Files uploaded successfully' });
-
-  } catch (err) {
-    console.error('Zip Error:', err);
-    res.status(500).json({ message: 'Failed to zip and store files.' });
-  }
+  res.json({ code: sessionId, message: 'Uploaded to Cloudinary successfully' });
 });
 
-// Get QR Code for a code
+// Generate QR Code
 app.get('/qrcode/:code', async (req, res) => {
   const { code } = req.params;
-  const url = `https://airbridge-backend.vercel.app/download/${code}`;
+  const url = `https://airbridge-backend.vercel.app/preview/${code}`;
   try {
     const qr = await QRCode.toDataURL(url);
     res.json({ qr });
@@ -94,48 +68,28 @@ app.get('/qrcode/:code', async (req, res) => {
   }
 });
 
-// Download by code
-app.get('/download/:code', (req, res) => {
-  const code = req.params.code;
-  const session = sessions[code];
-
+// Preview Files/Text/Link
+app.get('/preview/:code', (req, res) => {
+  const session = sessions[req.params.code];
   if (!session || Date.now() > session.expiresAt) {
     return res.status(404).json({ message: 'Invalid or expired code' });
   }
 
-  res.download(session.zipPath);
+  res.json({
+    files: session.files || [],
+    text: session.text,
+    link: session.link,
+  });
 });
 
-// Preview text or link
-app.get('/preview/:code', (req, res) => {
-  const code = req.params.code;
-  const sessionDir = getUploadDir(code);
-  const textFile = path.join(sessionDir, 'note.txt');
-
-  if (fs.existsSync(textFile)) {
-    const data = fs.readFileSync(textFile, 'utf8');
-    return res.json({ text: data });
-  }
-
-  return res.status(404).json({ message: 'No text or link found' });
-});
-
-// Cleanup expired sessions (every 10 minutes)
+// Cleanup expired sessions
 setInterval(() => {
   for (let code in sessions) {
     if (Date.now() > sessions[code].expiresAt) {
-      const zip = sessions[code].zipPath;
-      const dir = getUploadDir(code);
-      try {
-        fs.rmSync(dir, { recursive: true, force: true });
-        fs.unlinkSync(zip);
-      } catch (e) {
-        console.error('Error during cleanup:', e);
-      }
       delete sessions[code];
     }
   }
-}, 10 * 60 * 1000);
+}, 10 * 60 * 1000); // every 10 min
 
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
