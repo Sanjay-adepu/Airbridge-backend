@@ -2,10 +2,8 @@ const express = require('express');
 const multer = require('multer');
 const cors = require('cors');
 const QRCode = require('qrcode');
-const { v4: uuidv4 } = require('uuid');
 const archiver = require('archiver');
-
-const axios = require('axios'); 
+const axios = require('axios');
 
 const cloudinary = require('cloudinary').v2;
 const { CloudinaryStorage } = require('multer-storage-cloudinary');
@@ -17,7 +15,7 @@ cloudinary.config({
   api_secret: "0C88e38P3JqkVrIdwExy26xHe18"
 });
 
-// Multer Cloudinary Storage - allow all file types
+// Cloudinary Storage Configuration (accept any file type)
 const storage = new CloudinaryStorage({
   cloudinary: cloudinary,
   params: async (req, file) => ({
@@ -34,12 +32,25 @@ const PORT = process.env.PORT || 5000;
 app.use(cors());
 app.use(express.json());
 
-// In-memory sessions
+// In-memory store for sessions
 const sessions = {};
+
+// 6-digit code generator
+function generateCode() {
+  const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
+  let code;
+  do {
+    code = '';
+    for (let i = 0; i < 6; i++) {
+      code += chars.charAt(Math.floor(Math.random() * chars.length));
+    }
+  } while (sessions[code]); // Avoid duplicates
+  return code;
+}
 
 // Upload Endpoint
 app.post('/upload', upload.array('files'), async (req, res) => {
-  const sessionId = req.headers['x-session-id'] || uuidv4();
+  const sessionId = req.headers['x-session-id'] || generateCode();
   const uploadedFiles = req.files.map(file => ({
     url: file.path,
     type: file.mimetype,
@@ -59,9 +70,7 @@ app.post('/upload', upload.array('files'), async (req, res) => {
   res.json({ code: sessionId, message: 'Uploaded to Cloudinary successfully' });
 });
 
-
-
-// New download endpoint to create ZIP from Cloudinary files
+// Download as ZIP Endpoint
 app.get('/download/:code', async (req, res) => {
   const code = req.params.code;
   const session = sessions[code];
@@ -86,12 +95,7 @@ app.get('/download/:code', async (req, res) => {
   archive.finalize();
 });
 
-
-
-
-
-
-// Generate QR Code
+// QR Code Generator
 app.get('/qrcode/:code', async (req, res) => {
   const { code } = req.params;
   const url = `https://airbridge-backend.vercel.app/preview/${code}`;
@@ -103,7 +107,7 @@ app.get('/qrcode/:code', async (req, res) => {
   }
 });
 
-// Preview Files/Text/Link
+// Preview Endpoint
 app.get('/preview/:code', (req, res) => {
   const session = sessions[req.params.code];
   if (!session || Date.now() > session.expiresAt) {
@@ -117,14 +121,14 @@ app.get('/preview/:code', (req, res) => {
   });
 });
 
-// Cleanup expired sessions
+// Cleanup expired sessions every 10 minutes
 setInterval(() => {
   for (let code in sessions) {
     if (Date.now() > sessions[code].expiresAt) {
       delete sessions[code];
     }
   }
-}, 10 * 60 * 1000); // every 10 min
+}, 10 * 60 * 1000);
 
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
