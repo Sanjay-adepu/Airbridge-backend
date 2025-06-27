@@ -50,7 +50,11 @@ const upload = multer({ storage });
 
 // Upload Endpoint
 app.post('/upload', upload.array('files'), async (req, res) => {
-  const sessionId = req.headers['x-session-id'] || generateCode();
+  let sessionId = req.headers['x-session-id'];
+  if (!sessionId) {
+    sessionId = generateCode(); // generate only if not provided
+  }
+
   const uploadDir = getUploadDir(sessionId);
   fs.mkdirSync(uploadDir, { recursive: true });
 
@@ -67,7 +71,7 @@ app.post('/upload', upload.array('files'), async (req, res) => {
 
     sessions[sessionId] = {
       zipPath,
-      expiresAt: Date.now() + 30 * 60 * 1000, // valid for 30 minutes
+      expiresAt: Date.now() + 30 * 60 * 1000, // 30 minutes
     };
 
     res.json({ code: sessionId, message: 'Files uploaded successfully' });
