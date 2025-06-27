@@ -4,6 +4,8 @@ const cors = require('cors');
 const QRCode = require('qrcode');
 const { v4: uuidv4 } = require('uuid');
 
+const axios = require('axios');
+
 const cloudinary = require('cloudinary').v2;
 const { CloudinaryStorage } = require('multer-storage-cloudinary');
 
@@ -55,6 +57,38 @@ app.post('/upload', upload.array('files'), async (req, res) => {
 
   res.json({ code: sessionId, message: 'Uploaded to Cloudinary successfully' });
 });
+
+
+
+// New download endpoint to create ZIP from Cloudinary files
+app.get('/download/:code', async (req, res) => {
+  const code = req.params.code;
+  const session = sessions[code];
+
+  if (!session || Date.now() > session.expiresAt) {
+    return res.status(404).json({ message: 'Invalid or expired code' });
+  }
+
+  const archive = archiver('zip', { zlib: { level: 9 } });
+  res.attachment(`${code}.zip`);
+  archive.pipe(res);
+
+  for (const file of session.files) {
+    try {
+      const response = await axios.get(file.url, { responseType: 'stream' });
+      archive.append(response.data, { name: file.name });
+    } catch (error) {
+      console.error('Error adding file to archive:', file.name, error.message);
+    }
+  }
+
+  archive.finalize();
+});
+
+
+
+
+
 
 // Generate QR Code
 app.get('/qrcode/:code', async (req, res) => {
