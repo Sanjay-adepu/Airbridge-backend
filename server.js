@@ -3,36 +3,47 @@ const cors = require('cors');
 const QRCode = require('qrcode');
 const archiver = require('archiver');
 const axios = require('axios');
+const { createClient } = require('@supabase/supabase-js');
 
 const app = express();
 const PORT = process.env.PORT || 5000;
 
 
-const corsOptions = {
+app.use(cors({
   origin: [
     'http://localhost:5173',
-    'https://airbridge-gamma.vercel.app',
+    'https://airbridge-gamma.vercel.app'
   ],
-};
-
-app.use(cors(corsOptions));
+  methods: ['GET', 'POST'],
+  credentials: true
+}));
 
 
 
 app.use(express.json());
 
+// ✅ Supabase admin client
+const supabase = createClient(
+  'https://ahqwlfgoxmepucldmpyc.supabase.co',
+  'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImFocXdsZmdveG1lcHVjbGRtcHljIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc1MTE3MDQ4OCwiZXhwIjoyMDY2NzQ2NDg4fQ.5jRexF8EgyBcg4kv5Z7mgypOeE3NPcVVskN7_LcTQL4'
+);
+
+// 🧠 In-memory session store
 const sessions = {};
 
+// 🔑 Generate 6-character alphanumeric code
 function generateCode() {
   const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
   let code;
   do {
-    code = Array.from({ length: 6 }, () => chars.charAt(Math.floor(Math.random() * chars.length))).join('');
+    code = Array.from({ length: 6 }, () =>
+      chars.charAt(Math.floor(Math.random() * chars.length))
+    ).join('');
   } while (sessions[code]);
   return code;
 }
 
-// ✅ Upload API: Save uploaded Supabase URLs & metadata
+// ✅ Upload session registration (files, text, link)
 app.post('/upload', async (req, res) => {
   const sessionId = generateCode();
   const { files = [], text = '', link = '' } = req.body;
@@ -41,7 +52,7 @@ app.post('/upload', async (req, res) => {
     files, // [{ name, type, url }]
     text,
     link,
-    expiresAt: Date.now() + 30 * 60 * 1000, // 30 minutes
+    expiresAt: Date.now() + 10 * 60 * 1000, // 10 minutes
   };
 
   res.json({ code: sessionId, message: 'Upload registered' });
@@ -80,7 +91,7 @@ app.get('/qrcode/:code', async (req, res) => {
   }
 });
 
-// ✅ Preview API
+// ✅ Session preview
 app.get('/preview/:code', (req, res) => {
   const session = sessions[req.params.code];
   if (!session || Date.now() > session.expiresAt)
@@ -93,15 +104,30 @@ app.get('/preview/:code', (req, res) => {
   });
 });
 
-// ✅ Auto-delete expired sessions
-setInterval(() => {
+// ✅ Auto-delete expired sessions and files
+setInterval(async () => {
   for (const code in sessions) {
-    if (Date.now() > sessions[code].expiresAt) {
+    const session = sessions[code];
+    if (Date.now() > session.expiresAt) {
+      if (session.files && session.files.length > 0) {
+        const paths = session.files
+          .map(file => {
+            const match = file.url.match(/\/storage\/v1\/object\/public\/uploads\/(.+)$/);
+            return match ? `uploads/${match[1]}` : null;
+          })
+          .filter(Boolean);
+
+        if (paths.length > 0) {
+          const { error } = await supabase.storage.from('uploads').remove(paths);
+          if (error) console.error('❌ Failed to delete Supabase files:', error.message);
+        }
+      }
+
       delete sessions[code];
     }
   }
-}, 10 * 60 * 1000); // Every 10 minutes
+}, 10 * 60 * 1000); // every 10 minutes
 
 app.listen(PORT, () => {
-  console.log(`Server running on port ${PORT}`);
+  console.log(`✅ Server running on port ${PORT}`);
 });
