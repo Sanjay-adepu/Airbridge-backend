@@ -6,8 +6,9 @@ const axios = require('axios');
 
 const app = express();
 const PORT = process.env.PORT || 5000;
+
 app.use(cors());
-app.use(express.json({ limit: '20mb' }));
+app.use(express.json());
 
 const sessions = {};
 
@@ -15,57 +16,27 @@ function generateCode() {
   const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
   let code;
   do {
-    code = Array.from({ length: 6 }, () => chars[Math.floor(Math.random() * chars.length)]).join('');
+    code = Array.from({ length: 6 }, () => chars.charAt(Math.floor(Math.random() * chars.length))).join('');
   } while (sessions[code]);
   return code;
 }
 
-// ✅ Upload with UploadThing URLs
+// ✅ Upload API: Save uploaded Supabase URLs & metadata
 app.post('/upload', async (req, res) => {
-  const { uploadedUrls = [], text = '', link = '' } = req.body;
   const sessionId = generateCode();
-
-  const uploadedFiles = uploadedUrls.map(url => ({
-    name: url.split('/').pop(),
-    type: 'unknown',
-    url,
-  }));
+  const { files = [], text = '', link = '' } = req.body;
 
   sessions[sessionId] = {
-    files: uploadedFiles,
+    files, // [{ name, type, url }]
     text,
     link,
-    expiresAt: Date.now() + 30 * 60 * 1000,
+    expiresAt: Date.now() + 30 * 60 * 1000, // 30 minutes
   };
 
-  res.json({ code: sessionId, message: 'Upload successful' });
+  res.json({ code: sessionId, message: 'Upload registered' });
 });
 
-// ✅ QR Code
-app.get('/qrcode/:code', async (req, res) => {
-  const url = `https://airbridge-backend.vercel.app/preview/${req.params.code}`;
-  try {
-    const qr = await QRCode.toDataURL(url);
-    res.json({ qr });
-  } catch (err) {
-    res.status(500).json({ message: 'QR generation failed' });
-  }
-});
-
-// ✅ Preview
-app.get('/preview/:code', (req, res) => {
-  const session = sessions[req.params.code];
-  if (!session || Date.now() > session.expiresAt)
-    return res.status(404).json({ message: 'Invalid or expired code' });
-
-  res.json({
-    files: session.files,
-    text: session.text,
-    link: session.link,
-  });
-});
-
-// ✅ Download ZIP
+// ✅ ZIP download
 app.get('/download/:code', async (req, res) => {
   const session = sessions[req.params.code];
   if (!session || Date.now() > session.expiresAt)
@@ -87,12 +58,38 @@ app.get('/download/:code', async (req, res) => {
   archive.finalize();
 });
 
-// ✅ Cleanup expired sessions
-setInterval(() => {
-  for (let code in sessions) {
-    if (Date.now() > sessions[code].expiresAt) delete sessions[code];
+// ✅ QR code preview
+app.get('/qrcode/:code', async (req, res) => {
+  const url = `https://airbridge-backend.vercel.app/preview/${req.params.code}`;
+  try {
+    const qr = await QRCode.toDataURL(url);
+    res.json({ qr });
+  } catch (err) {
+    res.status(500).json({ message: 'QR generation failed' });
   }
-}, 10 * 60 * 1000);
+});
+
+// ✅ Preview API
+app.get('/preview/:code', (req, res) => {
+  const session = sessions[req.params.code];
+  if (!session || Date.now() > session.expiresAt)
+    return res.status(404).json({ message: 'Invalid or expired code' });
+
+  res.json({
+    files: session.files,
+    text: session.text,
+    link: session.link,
+  });
+});
+
+// ✅ Auto-delete expired sessions
+setInterval(() => {
+  for (const code in sessions) {
+    if (Date.now() > sessions[code].expiresAt) {
+      delete sessions[code];
+    }
+  }
+}, 10 * 60 * 1000); // Every 10 minutes
 
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
