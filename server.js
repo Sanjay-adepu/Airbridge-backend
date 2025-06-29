@@ -17,8 +17,11 @@ app.use(express.json());
 
 // ✅ Supabase admin client
 const supabase = createClient(
-  'https://ahqwlfgoxmepucldmpyc.supabase.co',
-  'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFz...YOUR_KEY...'
+  
+'https://ahqwlfgoxmepucldmpyc.supabase.co',
+  'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImFocXdsZmdveG1lcHVjbGRtcHljIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc1MTE3MDQ4OCwiZXhwIjoyMDY2NzQ2NDg4fQ.5jRexF8EgyBcg4kv5Z7mgypOeE3NPcVVskN7_LcTQL4'
+
+
 );
 
 // 🧠 In-memory session store
