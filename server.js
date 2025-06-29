@@ -14,12 +14,13 @@ app.use(express.json());
 const upload = multer({ storage: multer.memoryStorage() });
 
 const s3 = new AWS.S3({
-  accessKeyId: "sFat404pOWVyOCAa9feLz62U5gM9l39ffY1BIlBd",
-  secretAccessKey: "OTvQbifzJBk3DGXO",
+  accessKeyId: "OTvQbifzJBk3DGXO",        // ✅ this is the access key
+  secretAccessKey: "sFat404pOWVyOCAa9feLz62U5gM9l39ffY1BIlBd",  // ✅ this is the secret
   endpoint: "https://s3.tebi.io",
   region: "us-east-1",
   signatureVersion: 'v4',
 });
+
 
 const BUCKET_NAME = "airbridge-files";
 const sessions = {};
