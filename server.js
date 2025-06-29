@@ -1,24 +1,13 @@
 const express = require('express');
 const cors = require('cors');
-const multer = require('multer');
 const QRCode = require('qrcode');
 const archiver = require('archiver');
 const axios = require('axios');
-const { createClient } = require('@supabase/supabase-js');
 
 const app = express();
 const PORT = process.env.PORT || 5000;
 app.use(cors());
-app.use(express.json());
-
-const upload = multer({ storage: multer.memoryStorage() });
-
-// ✅ Supabase Config
-const supabase = createClient(
-  'https://ahqwlfgoxmepucldmpyc.supabase.co',
-  'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImFocXdsZmdveG1lcHVjbGRtcHljIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc1MTE3MDQ4OCwiZXhwIjoyMDY2NzQ2NDg4fQ.5jRexF8EgyBcg4kv5Z7mgypOeE3NPcVVskN7_LcTQL4'
-);
-const BUCKET = 'uploads';
+app.use(express.json({ limit: '20mb' }));
 
 const sessions = {};
 
@@ -31,32 +20,16 @@ function generateCode() {
   return code;
 }
 
-// ✅ Upload Endpoint (files/text/link)
-app.post('/upload', upload.array('files'), async (req, res) => {
+// ✅ Upload with UploadThing URLs
+app.post('/upload', async (req, res) => {
+  const { uploadedUrls = [], text = '', link = '' } = req.body;
   const sessionId = generateCode();
-  const uploadedFiles = [];
 
-  for (const file of req.files || []) {
-    const filePath = `${Date.now()}-${file.originalname}`;
-
-    const { error } = await supabase.storage
-      .from(BUCKET)
-      .upload(filePath, file.buffer, {
-        contentType: file.mimetype,
-        upsert: true,
-      });
-
-    if (error) {
-      console.error('Supabase upload error:', error.message);
-      return res.status(500).json({ message: 'Upload failed', error });
-    }
-
-    const { data } = supabase.storage.from(BUCKET).getPublicUrl(filePath);
-    uploadedFiles.push({ name: file.originalname, type: file.mimetype, url: data.publicUrl });
-  }
-
-  const text = req.body.text || '';
-  const link = req.body.link || '';
+  const uploadedFiles = uploadedUrls.map(url => ({
+    name: url.split('/').pop(),
+    type: 'unknown',
+    url,
+  }));
 
   sessions[sessionId] = {
     files: uploadedFiles,
@@ -66,6 +39,30 @@ app.post('/upload', upload.array('files'), async (req, res) => {
   };
 
   res.json({ code: sessionId, message: 'Upload successful' });
+});
+
+// ✅ QR Code
+app.get('/qrcode/:code', async (req, res) => {
+  const url = `https://airbridge-backend.vercel.app/preview/${req.params.code}`;
+  try {
+    const qr = await QRCode.toDataURL(url);
+    res.json({ qr });
+  } catch (err) {
+    res.status(500).json({ message: 'QR generation failed' });
+  }
+});
+
+// ✅ Preview
+app.get('/preview/:code', (req, res) => {
+  const session = sessions[req.params.code];
+  if (!session || Date.now() > session.expiresAt)
+    return res.status(404).json({ message: 'Invalid or expired code' });
+
+  res.json({
+    files: session.files,
+    text: session.text,
+    link: session.link,
+  });
 });
 
 // ✅ Download ZIP
@@ -88,30 +85,6 @@ app.get('/download/:code', async (req, res) => {
   }
 
   archive.finalize();
-});
-
-// ✅ QR code
-app.get('/qrcode/:code', async (req, res) => {
-  const url = `https://airbridge-backend.vercel.app/preview/${req.params.code}`;
-  try {
-    const qr = await QRCode.toDataURL(url);
-    res.json({ qr });
-  } catch (err) {
-    res.status(500).json({ message: 'QR generation failed' });
-  }
-});
-
-// ✅ Preview
-app.get('/preview/:code', (req, res) => {
-  const session = sessions[req.params.code];
-  if (!session || Date.now() > session.expiresAt)
-    return res.status(404).json({ message: 'Invalid or expired code' });
-
-  res.json({
-    files: session.files,
-    text: session.text,
-    link: session.link,
-  });
 });
 
 // ✅ Cleanup expired sessions
