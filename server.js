@@ -1,10 +1,10 @@
 const express = require('express');
 const cors = require('cors');
 const multer = require('multer');
-const AWS = require('aws-sdk');
 const QRCode = require('qrcode');
 const archiver = require('archiver');
 const axios = require('axios');
+const { createClient } = require('@supabase/supabase-js');
 
 const app = express();
 const PORT = process.env.PORT || 5000;
@@ -13,43 +13,46 @@ app.use(express.json());
 
 const upload = multer({ storage: multer.memoryStorage() });
 
-const s3 = new AWS.S3({
-  accessKeyId: "OTvQbifzJBk3DGXO",        // ✅ this is the access key
-  secretAccessKey: "sFat404pOWVyOCAa9feLz62U5gM9l39ffY1BIlBd",  // ✅ this is the secret
-  endpoint: "https://s3.tebi.io",
-  region: "us-east-1",
-  signatureVersion: 'v4',
-});
+// ✅ Supabase Config
+const supabase = createClient(
+  'https://ahqwlfgoxmepucldmpyc.supabase.co',
+  'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImFocXdsZmdveG1lcHVjbGRtcHljIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc1MTE3MDQ4OCwiZXhwIjoyMDY2NzQ2NDg4fQ.5jRexF8EgyBcg4kv5Z7mgypOeE3NPcVVskN7_LcTQL4'
+);
+const BUCKET = 'uploads';
 
-
-const BUCKET_NAME = "airbridge-files";
 const sessions = {};
 
 function generateCode() {
   const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
   let code;
   do {
-    code = Array.from({ length: 6 }, () => chars.charAt(Math.floor(Math.random() * chars.length))).join('');
+    code = Array.from({ length: 6 }, () => chars[Math.floor(Math.random() * chars.length)]).join('');
   } while (sessions[code]);
   return code;
 }
 
-// ✅ Direct Upload API (files/text/link - all handled here)
+// ✅ Upload Endpoint (files/text/link)
 app.post('/upload', upload.array('files'), async (req, res) => {
   const sessionId = generateCode();
   const uploadedFiles = [];
 
   for (const file of req.files || []) {
-    const key = `uploads/${Date.now()}-${file.originalname}`;
-    await s3.putObject({
-      Bucket: BUCKET_NAME,
-      Key: key,
-      Body: file.buffer,
-      ContentType: file.mimetype
-    }).promise();
+    const filePath = `${Date.now()}-${file.originalname}`;
 
-    const url = `https://${BUCKET_NAME}.s3.tebi.io/${key}`;
-    uploadedFiles.push({ name: file.originalname, type: file.mimetype, url });
+    const { error } = await supabase.storage
+      .from(BUCKET)
+      .upload(filePath, file.buffer, {
+        contentType: file.mimetype,
+        upsert: true,
+      });
+
+    if (error) {
+      console.error('Supabase upload error:', error.message);
+      return res.status(500).json({ message: 'Upload failed', error });
+    }
+
+    const { data } = supabase.storage.from(BUCKET).getPublicUrl(filePath);
+    uploadedFiles.push({ name: file.originalname, type: file.mimetype, url: data.publicUrl });
   }
 
   const text = req.body.text || '';
@@ -65,7 +68,7 @@ app.post('/upload', upload.array('files'), async (req, res) => {
   res.json({ code: sessionId, message: 'Upload successful' });
 });
 
-// Download ZIP
+// ✅ Download ZIP
 app.get('/download/:code', async (req, res) => {
   const session = sessions[req.params.code];
   if (!session || Date.now() > session.expiresAt)
@@ -87,7 +90,7 @@ app.get('/download/:code', async (req, res) => {
   archive.finalize();
 });
 
-// Generate QR
+// ✅ QR code
 app.get('/qrcode/:code', async (req, res) => {
   const url = `https://airbridge-backend.vercel.app/preview/${req.params.code}`;
   try {
@@ -98,12 +101,11 @@ app.get('/qrcode/:code', async (req, res) => {
   }
 });
 
-// Preview
+// ✅ Preview
 app.get('/preview/:code', (req, res) => {
   const session = sessions[req.params.code];
-  if (!session || Date.now() > session.expiresAt) {
+  if (!session || Date.now() > session.expiresAt)
     return res.status(404).json({ message: 'Invalid or expired code' });
-  }
 
   res.json({
     files: session.files,
@@ -112,7 +114,7 @@ app.get('/preview/:code', (req, res) => {
   });
 });
 
-// Cleanup
+// ✅ Cleanup expired sessions
 setInterval(() => {
   for (let code in sessions) {
     if (Date.now() > sessions[code].expiresAt) delete sessions[code];
