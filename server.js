@@ -1,44 +1,30 @@
-
 const express = require('express');
 const cors = require('cors');
-const multer = require('multer');
 const AWS = require('aws-sdk');
 const QRCode = require('qrcode');
 const archiver = require('archiver');
 const axios = require('axios');
-const { v4: uuidv4 } = require('uuid');
 
 const app = express();
 const PORT = process.env.PORT || 5000;
+app.use(cors());
+app.use(express.json({ limit: '10mb' }));
 
-app.use(cors({ 
-  origin: [
-    'http://localhost:5173',
-    'https://airbridge-gamma.vercel.app'
-  ],
-  methods: ['GET', 'POST'],
-  credentials: true
-}));
-
-app.use(express.json());
-
-// Memory multer config
-const upload = multer({ storage: multer.memoryStorage() });
-
-// ✅ Tebi S3 Config (using provided credentials)
+// ✅ Tebi S3 Config
 const s3 = new AWS.S3({
   accessKeyId: "sFat404pOWVyOCAa9feLz62U5gM9l39ffY1BIlBd",
   secretAccessKey: "OTvQbifzJBk3DGXO",
-  endpoint: "https://s3.tebi.io", // Tebi endpoint
+  endpoint: "https://s3.tebi.io",
   region: "us-east-1",
-  signatureVersion: 'v4'
+  signatureVersion: 'v4',
 });
-const BUCKET_NAME = "airbridge-files"; // Replace with your actual Tebi bucket name
+
+const BUCKET_NAME = "airbridge-files";
 
 // In-memory session store
 const sessions = {};
 
-// Generate unique 6-char code
+// Generate 6-char code
 function generateCode() {
   const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
   let code;
@@ -48,35 +34,52 @@ function generateCode() {
   return code;
 }
 
-// Upload files to Tebi
-app.post('/upload', upload.array('files'), async (req, res) => {
-  const sessionId = req.headers['x-session-id'] || generateCode();
-  const uploadedFiles = [];
+// ✅ Generate Pre-signed URLs
+app.post('/generate-upload-urls', async (req, res) => {
+  try {
+    const files = req.body.files || [];
+    const urls = [];
 
-  for (const file of req.files || []) {
-    const key = `uploads/${Date.now()}-${file.originalname}`;
-    await s3.putObject({
-      Bucket: BUCKET_NAME,
-      Key: key,
-      Body: file.buffer,
-      ContentType: file.mimetype
-    }).promise();
+    for (const file of files) {
+      const key = `uploads/${Date.now()}-${file.name}`;
+      const url = await s3.getSignedUrlPromise('putObject', {
+        Bucket: BUCKET_NAME,
+        Key: key,
+        ContentType: file.type,
+        Expires: 300, // 5 minutes
+      });
 
-    const url = `https://${BUCKET_NAME}.s3.tebi.io/${key}`;
-    uploadedFiles.push({ url, name: file.originalname, type: file.mimetype });
+      urls.push({
+        uploadUrl: url,
+        fileUrl: `https://${BUCKET_NAME}.s3.tebi.io/${key}`,
+        name: file.name,
+        type: file.type,
+        key,
+      });
+    }
+
+    res.json({ urls });
+  } catch (err) {
+    console.error('Error generating upload URLs:', err);
+    res.status(500).json({ message: 'Failed to generate upload URLs' });
   }
-
-  sessions[sessionId] = {
-    files: uploadedFiles,
-    text: req.body.text || '',
-    link: req.body.link || '',
-    expiresAt: Date.now() + 30 * 60 * 1000
-  };
-
-  res.json({ code: sessionId, message: 'Uploaded to Tebi successfully' });
 });
 
-// Download as ZIP
+// ✅ Receive metadata and store session
+app.post('/register-upload', (req, res) => {
+  const sessionId = generateCode();
+  const { files, text = '', link = '' } = req.body;
+
+  sessions[sessionId] = {
+    files,
+    text,
+    link,
+    expiresAt: Date.now() + 30 * 60 * 1000,
+  };
+
+  res.json({ code: sessionId });
+});
+
 app.get('/download/:code', async (req, res) => {
   const session = sessions[req.params.code];
   if (!session || Date.now() > session.expiresAt) {
@@ -99,7 +102,6 @@ app.get('/download/:code', async (req, res) => {
   archive.finalize();
 });
 
-// QR code endpoint
 app.get('/qrcode/:code', async (req, res) => {
   const url = `https://airbridge-backend.vercel.app/preview/${req.params.code}`;
   try {
@@ -110,12 +112,12 @@ app.get('/qrcode/:code', async (req, res) => {
   }
 });
 
-// Preview endpoint
 app.get('/preview/:code', (req, res) => {
   const session = sessions[req.params.code];
   if (!session || Date.now() > session.expiresAt) {
     return res.status(404).json({ message: 'Invalid or expired code' });
   }
+
   res.json({
     files: session.files || [],
     text: session.text,
@@ -123,12 +125,10 @@ app.get('/preview/:code', (req, res) => {
   });
 });
 
-// Cleanup expired sessions
+// Clean expired sessions
 setInterval(() => {
   for (let code in sessions) {
-    if (Date.now() > sessions[code].expiresAt) {
-      delete sessions[code];
-    }
+    if (Date.now() > sessions[code].expiresAt) delete sessions[code];
   }
 }, 10 * 60 * 1000);
 
