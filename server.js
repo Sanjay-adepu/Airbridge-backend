@@ -147,7 +147,7 @@ app.post('/b2', upload.single('file'), async (req, res) => {
 
     const { data: uploadData } = await b2.getUploadUrl({ bucketId: bucket.bucketId });
 
-    const uploadRes = await axios.post(uploadData.uploadUrl, file.buffer, {
+    await axios.post(uploadData.uploadUrl, file.buffer, {
       headers: {
         Authorization: uploadData.authorizationToken,
         'X-Bz-File-Name': encodeURIComponent(file.originalname),
@@ -156,14 +156,23 @@ app.post('/b2', upload.single('file'), async (req, res) => {
       }
     });
 
-    const publicUrl = `https://f005.backblazeb2.com/file/${BUCKET_NAME}/${encodeURIComponent(file.originalname)}`;
-    res.json({ message: 'File uploaded to B2', fileName: file.originalname, url: publicUrl });
+    // Instead of public URL, return a server-protected endpoint
+    const privateAccessUrl = `https://airbridge-backend.vercel.app/b2-download/${encodeURIComponent(file.originalname)}`;
+
+    res.json({
+      message: 'File uploaded to private B2 bucket',
+      fileName: file.originalname,
+      url: privateAccessUrl
+    });
 
   } catch (err) {
     console.error('B2 direct upload error:', err.message);
     res.status(500).json({ message: 'B2 direct upload failed', error: err.message });
   }
 });
+
+
+
 
 setInterval(() => {
   for (const code in sessions) {
