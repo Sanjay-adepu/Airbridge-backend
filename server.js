@@ -1,17 +1,9 @@
+// server.js
 const express = require('express');
 const cors = require('cors');
 const QRCode = require('qrcode');
 const archiver = require('archiver');
 const axios = require('axios');
-const admin = require('firebase-admin');
-const serviceAccount = require('./firebase-service-account.json');
-
-admin.initializeApp({
-  credential: admin.credential.cert(serviceAccount),
-  storageBucket: "droplin-89156.appspot.com"
-});
-
-const bucket = admin.storage().bucket();
 
 const app = express();
 const PORT = process.env.PORT || 5000;
@@ -29,7 +21,9 @@ function generateCode() {
   const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
   let code;
   do {
-    code = Array.from({ length: 6 }, () => chars.charAt(Math.floor(Math.random() * chars.length))).join('');
+    code = Array.from({ length: 6 }, () =>
+      chars.charAt(Math.floor(Math.random() * chars.length))
+    ).join('');
   } while (sessions[code]);
   return code;
 }
@@ -38,17 +32,11 @@ app.post('/upload', async (req, res) => {
   const sessionId = generateCode();
   const { files = [], text = '', link = '' } = req.body;
 
-  const enrichedFiles = files.map(f => ({
-    ...f,
-    path: f.url.split('/o/')[1]?.split('?')[0],
-    uploadedAt: Date.now()
-  }));
-
   sessions[sessionId] = {
-    files: enrichedFiles,
+    files,
     text,
     link,
-    expiresAt: Date.now() + 5 * 60 * 1000
+    expiresAt: Date.now() + 10 * 60 * 1000
   };
 
   res.json({ code: sessionId, message: 'Upload registered' });
@@ -97,29 +85,14 @@ app.get('/preview/:code', (req, res) => {
   });
 });
 
-async function deleteFirebaseFile(path) {
-  try {
-    await bucket.file(decodeURIComponent(path)).delete();
-    console.log(`Deleted: ${path}`);
-  } catch (err) {
-    console.error(`Failed to delete ${path}:`, err.message);
-  }
-}
-
-setInterval(async () => {
-  const now = Date.now();
+setInterval(() => {
   for (const code in sessions) {
-    const session = sessions[code];
-    if (now > session.expiresAt) {
-      for (const file of session.files || []) {
-        if (file.path) await deleteFirebaseFile(file.path);
-      }
+    if (Date.now() > sessions[code].expiresAt) {
       delete sessions[code];
-      console.log(`Session ${code} expired and cleaned up.`);
     }
   }
-}, 1 * 60 * 1000);
+}, 10 * 60 * 1000);
 
 app.listen(PORT, () => {
-  console.log(`Server running on port ${PORT}`);
+  console.log(`✅ Server running on port ${PORT}`);
 });
