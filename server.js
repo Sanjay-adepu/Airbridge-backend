@@ -3,7 +3,7 @@ const cors = require('cors');
 const QRCode = require('qrcode');
 const archiver = require('archiver');
 const axios = require('axios');
-const { createClient } = require('@supabase/supabase-js');
+const B2 = require('backblaze-b2');
 
 const app = express();
 const PORT = process.env.PORT || 5000;
@@ -15,16 +15,29 @@ app.use(cors({
 }));
 app.use(express.json());
 
-// ✅ Supabase client
-const supabase = createClient(
-  'https://ahqwlfgoxmepucldmpyc.supabase.co',
-  'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImFocXdsZmdveG1lcHVjbGRtcHljIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc1MTE3MDQ4OCwiZXhwIjoyMDY2NzQ2NDg4fQ.5jRexF8EgyBcg4kv5Z7mgypOeE3NPcVVskN7_LcTQL4'
-);
+// 🔐 B2 credentials
+const b2 = new B2({
+  applicationKeyId: '005519a4923b56a0000000001',
+  applicationKey: 'K005cQ5tUoYTHFRb3ZMqf6W9zexyMNA'
+});
+
+const BUCKET_NAME = 'droplin'; // 🔁 Change to your actual bucket name
+let b2AuthTime = 0;
+let b2Authorized = false;
+
+// 🔁 Authorize B2 once every 30 minutes
+async function authorizeB2() {
+  if (!b2Authorized || Date.now() - b2AuthTime > 1000 * 60 * 30) {
+    await b2.authorize();
+    b2AuthTime = Date.now();
+    b2Authorized = true;
+  }
+}
 
 // 🧠 In-memory session store
 const sessions = {};
 
-// 🔑 Generate 6-digit alphanumeric session code
+// 🔑 Generate 6-digit alphanumeric code
 function generateCode() {
   const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
   let code;
@@ -36,7 +49,7 @@ function generateCode() {
   return code;
 }
 
-// ✅ Upload endpoint
+// ✅ Upload metadata endpoint (text + file URLs)
 app.post('/upload', async (req, res) => {
   const sessionId = generateCode();
   const { files = [], text = '', link = '' } = req.body;
@@ -51,7 +64,7 @@ app.post('/upload', async (req, res) => {
   res.json({ code: sessionId, message: 'Upload registered' });
 });
 
-// ✅ ZIP download endpoint
+// ✅ ZIP Download endpoint
 app.get('/download/:code', async (req, res) => {
   const session = sessions[req.params.code];
   if (!session || Date.now() > session.expiresAt)
@@ -73,7 +86,7 @@ app.get('/download/:code', async (req, res) => {
   archive.finalize();
 });
 
-// ✅ QR Code generation
+// ✅ QR Code generator
 app.get('/qrcode/:code', async (req, res) => {
   const url = `https://airbridge-backend.vercel.app/preview/${req.params.code}`;
   try {
@@ -84,7 +97,7 @@ app.get('/qrcode/:code', async (req, res) => {
   }
 });
 
-// ✅ Preview endpoint
+// ✅ Preview metadata
 app.get('/preview/:code', (req, res) => {
   const session = sessions[req.params.code];
   if (!session || Date.now() > session.expiresAt)
@@ -97,61 +110,48 @@ app.get('/preview/:code', (req, res) => {
   });
 });
 
-// ✅ Function to delete all files in uploads/uploads/
-async function deleteAllUploads(res = null) {
+// ✅ Get B2 upload URL for frontend
+app.post('/b2-get-upload-url', async (req, res) => {
+  const { fileName, contentType } = req.body;
+
   try {
-    const { data: list, error: listError } = await supabase
-      .storage
-      .from('uploads')
-      .list('uploads', { limit: 1000 }); // 👈 correct folder path
+    await authorizeB2();
 
-    if (listError) {
-      console.error('❌ List error:', listError.message);
-      if (res) return res.status(500).json({ message: 'List error', error: listError.message });
-      return;
+    // Get bucket ID by name
+    const { data: bucketList } = await b2.listBuckets();
+    const bucket = bucketList.buckets.find(b => b.bucketName === BUCKET_NAME);
+
+    if (!bucket) {
+      return res.status(400).json({ message: 'Bucket not found' });
     }
 
-    const paths = list.map(file => `uploads/${file.name}`);
-    if (paths.length === 0) {
-      console.log('ℹ️ No files to delete.');
-      if (res) return res.json({ message: 'No files to delete.' });
-      return;
-    }
+    const bucketId = bucket.bucketId;
 
-    const { error: deleteError } = await supabase
-      .storage
-      .from('uploads')
-      .remove(paths);
+    // Get upload URL
+    const { data: uploadData } = await b2.getUploadUrl({ bucketId });
 
-    if (deleteError) {
-      console.error('❌ Delete error:', deleteError.message);
-      if (res) return res.status(500).json({ message: 'Delete error', error: deleteError.message });
-      return;
-    }
+    const finalUrl = `https://f005.backblazeb2.com/file/${BUCKET_NAME}/${encodeURIComponent(fileName)}`;
 
-    console.log('✅ Deleted files:', paths);
-    if (res) return res.json({ message: 'Deleted all files', files: paths });
+    res.json({
+      uploadUrl: uploadData.uploadUrl,
+      authorizationToken: uploadData.authorizationToken,
+      finalUrl
+    });
 
   } catch (err) {
-    console.error('🔥 Unexpected error:', err.message);
-    if (res) return res.status(500).json({ message: 'Unexpected error', error: err.message });
+    console.error('B2 upload URL error:', err.message);
+    res.status(500).json({ message: 'B2 upload URL error', error: err.message });
   }
-}
+});
 
-// ✅ Auto-delete files and sessions every 10 minutes
-setInterval(async () => {
-  await deleteAllUploads();
+// ✅ Auto-delete expired sessions every 10 minutes
+setInterval(() => {
   for (const code in sessions) {
     if (Date.now() > sessions[code].expiresAt) {
       delete sessions[code];
     }
   }
 }, 10 * 60 * 1000);
-
-// ✅ Manual cleanup endpoint
-app.get('/delete-all-uploads', async (req, res) => {
-  await deleteAllUploads(res);
-});
 
 // ✅ Start server
 app.listen(PORT, () => {
