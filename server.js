@@ -1,10 +1,9 @@
-// server.js
 const express = require('express');
 const cors = require('cors');
 const QRCode = require('qrcode');
 const archiver = require('archiver');
 const axios = require('axios');
-  
+
 const app = express();
 const PORT = process.env.PORT || 5000;
 
@@ -15,8 +14,10 @@ app.use(cors({
 }));
 app.use(express.json());
 
+// 🧠 In-memory session store
 const sessions = {};
 
+// 🔐 Generate 6-digit alphanumeric session code
 function generateCode() {
   const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
   let code;
@@ -28,6 +29,7 @@ function generateCode() {
   return code;
 }
 
+// ✅ Upload metadata (text/files/links)
 app.post('/upload', async (req, res) => {
   const sessionId = generateCode();
   const { files = [], text = '', link = '' } = req.body;
@@ -36,16 +38,18 @@ app.post('/upload', async (req, res) => {
     files,
     text,
     link,
-    expiresAt: Date.now() + 10 * 60 * 1000
+    expiresAt: Date.now() + 2 * 60 * 1000 // 2 minutes, same as Temp.sh expiry
   };
 
   res.json({ code: sessionId, message: 'Upload registered' });
 });
 
+// ✅ Download ZIP for files in a session
 app.get('/download/:code', async (req, res) => {
   const session = sessions[req.params.code];
-  if (!session || Date.now() > session.expiresAt)
+  if (!session || Date.now() > session.expiresAt) {
     return res.status(404).json({ message: 'Invalid or expired code' });
+  }
 
   const archive = archiver('zip', { zlib: { level: 9 } });
   res.attachment(`${req.params.code}.zip`);
@@ -63,6 +67,21 @@ app.get('/download/:code', async (req, res) => {
   archive.finalize();
 });
 
+// ✅ Preview uploaded data (text/link/files)
+app.get('/preview/:code', (req, res) => {
+  const session = sessions[req.params.code];
+  if (!session || Date.now() > session.expiresAt) {
+    return res.status(404).json({ message: 'Invalid or expired code' });
+  }
+
+  res.json({
+    files: session.files,
+    text: session.text,
+    link: session.link
+  });
+});
+
+// ✅ Generate QR code for preview URL
 app.get('/qrcode/:code', async (req, res) => {
   const url = `https://airbridge-backend.vercel.app/preview/${req.params.code}`;
   try {
@@ -73,26 +92,16 @@ app.get('/qrcode/:code', async (req, res) => {
   }
 });
 
-app.get('/preview/:code', (req, res) => {
-  const session = sessions[req.params.code];
-  if (!session || Date.now() > session.expiresAt)
-    return res.status(404).json({ message: 'Invalid or expired code' });
-
-  res.json({
-    files: session.files,
-    text: session.text,
-    link: session.link
-  });
-});
-
+// ✅ Auto-delete expired sessions every 2 minutes
 setInterval(() => {
   for (const code in sessions) {
     if (Date.now() > sessions[code].expiresAt) {
       delete sessions[code];
     }
   }
-}, 10 * 60 * 1000);
+}, 2 * 60 * 1000);
 
+// ✅ Start server
 app.listen(PORT, () => {
   console.log(`✅ Server running on port ${PORT}`);
 });
