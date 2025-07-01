@@ -173,6 +173,30 @@ app.post('/b2', upload.single('file'), async (req, res) => {
 
 
 
+// ✅ Serve private B2 file via backend proxy
+app.get('/b2-download/:filename', async (req, res) => {
+  try {
+    await authorizeB2();
+
+    const fileName = decodeURIComponent(req.params.filename);
+
+    const { data: stream, headers } = await b2.downloadFileByName({
+      bucketName: BUCKET_NAME,
+      fileName
+    });
+
+    res.setHeader('Content-Type', headers['content-type'] || 'application/octet-stream');
+    res.setHeader('Content-Disposition', `attachment; filename="${fileName}"`);
+    
+    stream.pipe(res);
+
+  } catch (err) {
+    console.error('B2 private download error:', err.message);
+    res.status(500).json({ message: 'Failed to stream file from B2', error: err.message });
+  }
+});
+
+
 
 setInterval(() => {
   for (const code in sessions) {
