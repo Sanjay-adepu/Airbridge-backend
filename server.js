@@ -3,7 +3,7 @@ const cors = require('cors');
 const QRCode = require('qrcode');
 const archiver = require('archiver');
 const axios = require('axios');
-const B2 = require('backblaze-b2');
+const B2 = require('backblaze-b2'); 
 
 const app = express();
 const PORT = process.env.PORT || 5000;
