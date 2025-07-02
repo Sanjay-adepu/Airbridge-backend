@@ -4,7 +4,7 @@ const QRCode = require('qrcode');
 const archiver = require('archiver');
 const multer = require('multer');
 const axios = require('axios');
-const { Readable } = require('stream');
+const FormData = require('form-data');
 
 const app = express();
 const PORT = process.env.PORT || 5000;
@@ -18,10 +18,8 @@ app.use(cors({
 }));
 app.use(express.json());
 
-// 🧠 In-memory store
+// 🧠 Session store
 const sessions = {};
-
-// 🔐 Generate random 6-char session code
 function generateCode() {
   const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
   let code;
@@ -48,43 +46,68 @@ app.post('/upload', async (req, res) => {
   res.json({ code: sessionId, message: 'Upload registered' });
 });
 
-// ✅ File Upload Route (Backend → GoFile.io)
+// ✅ Upload to Gofile.io
 app.post('/tempupload', upload.single('file'), async (req, res) => {
   try {
     if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
 
-    // 1. Get optimal upload server
+    // 1. Get the best GoFile server
     const serverRes = await axios.get('https://api.gofile.io/getServer');
     const uploadServer = serverRes.data.data.server;
 
-    // 2. Create FormData
-    const formData = new FormData();
-    formData.append('file', req.file.buffer, {
+    // 2. Prepare form data
+    const form = new FormData();
+    form.append('file', req.file.buffer, {
       filename: req.file.originalname,
       contentType: req.file.mimetype,
     });
 
-    // 3. Upload to GoFile
-    const response = await axios.post(
+    // 3. Post to GoFile
+    const gofileRes = await axios.post(
       `https://${uploadServer}.gofile.io/uploadFile`,
-      formData,
+      form,
       {
-        headers: formData.getHeaders(),
+        headers: form.getHeaders(),
         maxContentLength: Infinity,
         maxBodyLength: Infinity,
       }
     );
 
-    if (response.data.status !== 'ok') {
-      return res.status(500).json({ error: 'GoFile upload failed' });
+    if (gofileRes.data.status !== 'ok') {
+      console.error('Gofile response:', gofileRes.data);
+      return res.status(500).json({ error: 'Upload failed' });
     }
 
-    const fileUrl = response.data.data.downloadPage;
-    res.json({ url: fileUrl });
+    const fileUrl = gofileRes.data.data.downloadPage;
+    return res.json({ url: fileUrl });
 
   } catch (err) {
     console.error('GoFile upload error:', err.message);
     res.status(500).json({ error: 'GoFile upload error' });
+  }
+});
+
+// ✅ Preview
+app.get('/preview/:code', (req, res) => {
+  const session = sessions[req.params.code];
+  if (!session || Date.now() > session.expiresAt) {
+    return res.status(404).json({ message: 'Invalid or expired code' });
+  }
+  res.json({
+    files: session.files,
+    text: session.text,
+    link: session.link
+  });
+});
+
+// ✅ QR code
+app.get('/qrcode/:code', async (req, res) => {
+  const url = `https://airbridge-backend.vercel.app/preview/${req.params.code}`;
+  try {
+    const qr = await QRCode.toDataURL(url);
+    res.json({ qr });
+  } catch (err) {
+    res.status(500).json({ message: 'QR generation failed' });
   }
 });
 
@@ -104,39 +127,14 @@ app.get('/download/:code', async (req, res) => {
       const response = await axios.get(file.url, { responseType: 'stream' });
       archive.append(response.data, { name: file.name });
     } catch (err) {
-      console.error('ZIP append error:', err.message);
+      console.error('ZIP error:', err.message);
     }
   }
 
   archive.finalize();
 });
 
-// ✅ Preview session
-app.get('/preview/:code', (req, res) => {
-  const session = sessions[req.params.code];
-  if (!session || Date.now() > session.expiresAt) {
-    return res.status(404).json({ message: 'Invalid or expired code' });
-  }
-
-  res.json({
-    files: session.files,
-    text: session.text,
-    link: session.link,
-  });
-});
-
-// ✅ QR Code
-app.get('/qrcode/:code', async (req, res) => {
-  const url = `https://airbridge-backend.vercel.app/preview/${req.params.code}`;
-  try {
-    const qr = await QRCode.toDataURL(url);
-    res.json({ qr });
-  } catch (err) {
-    res.status(500).json({ message: 'QR generation failed' });
-  }
-});
-
-// ✅ Clean expired sessions
+// ✅ Auto-clean expired sessions
 setInterval(() => {
   for (const code in sessions) {
     if (Date.now() > sessions[code].expiresAt) {
