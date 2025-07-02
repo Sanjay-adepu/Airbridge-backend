@@ -12,7 +12,7 @@ app.use(cors({
   methods: ['GET', 'POST'],
   credentials: true
 }));
-app.use(express.json());
+app.use(express.json()); 
 
 // 🧠 In-memory session store
 const sessions = {};
