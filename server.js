@@ -2,14 +2,14 @@ const express = require('express');
 const cors = require('cors');
 const QRCode = require('qrcode');
 const archiver = require('archiver');
-const axios = require('axios');
 const multer = require('multer');
-const FormData = require('form-data');
+const axios = require('axios');
+const { Readable } = require('stream');
 
 const app = express();
 const PORT = process.env.PORT || 5000;
 
-const upload = multer({ storage: multer.memoryStorage() }); // memory buffer for upload
+const upload = multer(); // memory storage
 
 app.use(cors({
   origin: ['http://localhost:5173', 'https://airbridge-gamma.vercel.app'],
@@ -18,10 +18,10 @@ app.use(cors({
 }));
 app.use(express.json());
 
-// 🧠 In-memory session store
+// 🧠 In-memory store
 const sessions = {};
 
-// 🔐 Generate 6-digit alphanumeric session code
+// 🔐 Generate random 6-char session code
 function generateCode() {
   const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
   let code;
@@ -42,13 +42,53 @@ app.post('/upload', async (req, res) => {
     files,
     text,
     link,
-    expiresAt: Date.now() + 2 * 60 * 1000 // 2 minutes
+    expiresAt: Date.now() + 2 * 60 * 1000
   };
 
   res.json({ code: sessionId, message: 'Upload registered' });
 });
 
-// ✅ Download ZIP for files in a session
+// ✅ File Upload Route (Backend → GoFile.io)
+app.post('/tempupload', upload.single('file'), async (req, res) => {
+  try {
+    if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
+
+    // 1. Get optimal upload server
+    const serverRes = await axios.get('https://api.gofile.io/getServer');
+    const uploadServer = serverRes.data.data.server;
+
+    // 2. Create FormData
+    const formData = new FormData();
+    formData.append('file', req.file.buffer, {
+      filename: req.file.originalname,
+      contentType: req.file.mimetype,
+    });
+
+    // 3. Upload to GoFile
+    const response = await axios.post(
+      `https://${uploadServer}.gofile.io/uploadFile`,
+      formData,
+      {
+        headers: formData.getHeaders(),
+        maxContentLength: Infinity,
+        maxBodyLength: Infinity,
+      }
+    );
+
+    if (response.data.status !== 'ok') {
+      return res.status(500).json({ error: 'GoFile upload failed' });
+    }
+
+    const fileUrl = response.data.data.downloadPage;
+    res.json({ url: fileUrl });
+
+  } catch (err) {
+    console.error('GoFile upload error:', err.message);
+    res.status(500).json({ error: 'GoFile upload error' });
+  }
+});
+
+// ✅ Download ZIP
 app.get('/download/:code', async (req, res) => {
   const session = sessions[req.params.code];
   if (!session || Date.now() > session.expiresAt) {
@@ -64,14 +104,14 @@ app.get('/download/:code', async (req, res) => {
       const response = await axios.get(file.url, { responseType: 'stream' });
       archive.append(response.data, { name: file.name });
     } catch (err) {
-      console.error('ZIP error:', err.message);
+      console.error('ZIP append error:', err.message);
     }
   }
 
   archive.finalize();
 });
 
-// ✅ Preview uploaded data
+// ✅ Preview session
 app.get('/preview/:code', (req, res) => {
   const session = sessions[req.params.code];
   if (!session || Date.now() > session.expiresAt) {
@@ -81,11 +121,11 @@ app.get('/preview/:code', (req, res) => {
   res.json({
     files: session.files,
     text: session.text,
-    link: session.link
+    link: session.link,
   });
 });
 
-// ✅ Generate QR code for preview URL
+// ✅ QR Code
 app.get('/qrcode/:code', async (req, res) => {
   const url = `https://airbridge-backend.vercel.app/preview/${req.params.code}`;
   try {
@@ -96,36 +136,7 @@ app.get('/qrcode/:code', async (req, res) => {
   }
 });
 
-// ✅ Upload file to GoFile.io
-app.post('/tempupload', upload.single('file'), async (req, res) => {
-  try {
-    if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
-
-    // Step 1: Get server
-    const serverRes = await axios.get('https://api.gofile.io/getServer');
-    const server = serverRes.data.data.server;
-
-    // Step 2: Upload to GoFile
-    const form = new FormData();
-    form.append('file', req.file.buffer, req.file.originalname);
-
-    const uploadRes = await axios.post(`https://${server}.gofile.io/uploadFile`, form, {
-      headers: form.getHeaders(),
-      maxContentLength: Infinity,
-      maxBodyLength: Infinity
-    });
-
-    const pageUrl = uploadRes.data.data.downloadPage;
-    const directLink = uploadRes.data.data.directLink;
-
-    res.json({ url: directLink || pageUrl });
-  } catch (err) {
-    console.error('GoFile upload error:', err.response?.data || err.message);
-    res.status(500).json({ error: 'GoFile upload failed' });
-  }
-});
-
-// ✅ Auto-delete expired sessions
+// ✅ Clean expired sessions
 setInterval(() => {
   for (const code in sessions) {
     if (Date.now() > sessions[code].expiresAt) {
