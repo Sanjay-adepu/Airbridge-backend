@@ -16,6 +16,7 @@
     "crypto": "^1.0.1",
     "express": "^5.1.0",
     "fs": "^0.0.1-security",
+    "form-data": "^4.0.3",
     "multer": "^1.4.5-lts.2",
     "firebase": "^11.10.0",
     "path": "^0.12.7",
