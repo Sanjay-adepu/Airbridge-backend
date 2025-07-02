@@ -3,16 +3,20 @@ const cors = require('cors');
 const QRCode = require('qrcode');
 const archiver = require('archiver');
 const axios = require('axios');
+const multer = require('multer');
+const { Readable } = require('stream');
 
 const app = express();
 const PORT = process.env.PORT || 5000;
+
+const upload = multer(); // uses memory storage (no disk)
 
 app.use(cors({
   origin: ['http://localhost:5173', 'https://airbridge-gamma.vercel.app'],
   methods: ['GET', 'POST'],
   credentials: true
 }));
-app.use(express.json()); 
+app.use(express.json());
 
 // 🧠 In-memory session store
 const sessions = {};
@@ -38,7 +42,7 @@ app.post('/upload', async (req, res) => {
     files,
     text,
     link,
-    expiresAt: Date.now() + 2 * 60 * 1000 // 2 minutes, same as Temp.sh expiry
+    expiresAt: Date.now() + 2 * 60 * 1000 // 2 minutes
   };
 
   res.json({ code: sessionId, message: 'Upload registered' });
@@ -92,7 +96,30 @@ app.get('/qrcode/:code', async (req, res) => {
   }
 });
 
-// ✅ Auto-delete expired sessions every 2 minutes
+// ✅ Direct stream upload to Temp.sh (no CORS, no memory issue)
+app.post('/tempupload', upload.single('file'), async (req, res) => {
+  try {
+    if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
+
+    const stream = Readable.from(req.file.buffer);
+    const response = await axios.post('https://temp.sh/', stream, {
+      headers: {
+        'Content-Type': req.file.mimetype,
+        'Content-Disposition': `attachment; filename="${req.file.originalname}"`,
+      },
+      maxBodyLength: Infinity,
+      maxContentLength: Infinity,
+    });
+
+    const fileUrl = typeof response.data === 'string' ? response.data.trim() : '';
+    return res.json({ url: fileUrl });
+  } catch (err) {
+    console.error('Temp.sh upload error:', err.message);
+    return res.status(500).json({ error: 'Temp.sh upload failed' });
+  }
+});
+
+// ✅ Auto-delete expired sessions
 setInterval(() => {
   for (const code in sessions) {
     if (Date.now() > sessions[code].expiresAt) {
