@@ -4,12 +4,12 @@ const QRCode = require('qrcode');
 const archiver = require('archiver');
 const axios = require('axios');
 const multer = require('multer');
-const { Readable } = require('stream');
+const FormData = require('form-data');
 
 const app = express();
 const PORT = process.env.PORT || 5000;
 
-const upload = multer(); // uses memory storage (no disk)
+const upload = multer({ storage: multer.memoryStorage() }); // memory buffer for upload
 
 app.use(cors({
   origin: ['http://localhost:5173', 'https://airbridge-gamma.vercel.app'],
@@ -71,7 +71,7 @@ app.get('/download/:code', async (req, res) => {
   archive.finalize();
 });
 
-// ✅ Preview uploaded data (text/link/files)
+// ✅ Preview uploaded data
 app.get('/preview/:code', (req, res) => {
   const session = sessions[req.params.code];
   if (!session || Date.now() > session.expiresAt) {
@@ -96,26 +96,32 @@ app.get('/qrcode/:code', async (req, res) => {
   }
 });
 
-// ✅ Direct stream upload to Temp.sh (no CORS, no memory issue)
+// ✅ Upload file to GoFile.io
 app.post('/tempupload', upload.single('file'), async (req, res) => {
   try {
     if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
 
-    const stream = Readable.from(req.file.buffer);
-    const response = await axios.post('https://temp.sh/', stream, {
-      headers: {
-        'Content-Type': req.file.mimetype,
-        'Content-Disposition': `attachment; filename="${req.file.originalname}"`,
-      },
-      maxBodyLength: Infinity,
+    // Step 1: Get server
+    const serverRes = await axios.get('https://api.gofile.io/getServer');
+    const server = serverRes.data.data.server;
+
+    // Step 2: Upload to GoFile
+    const form = new FormData();
+    form.append('file', req.file.buffer, req.file.originalname);
+
+    const uploadRes = await axios.post(`https://${server}.gofile.io/uploadFile`, form, {
+      headers: form.getHeaders(),
       maxContentLength: Infinity,
+      maxBodyLength: Infinity
     });
 
-    const fileUrl = typeof response.data === 'string' ? response.data.trim() : '';
-    return res.json({ url: fileUrl });
+    const pageUrl = uploadRes.data.data.downloadPage;
+    const directLink = uploadRes.data.data.directLink;
+
+    res.json({ url: directLink || pageUrl });
   } catch (err) {
-    console.error('Temp.sh upload error:', err.message);
-    return res.status(500).json({ error: 'Temp.sh upload failed' });
+    console.error('GoFile upload error:', err.response?.data || err.message);
+    res.status(500).json({ error: 'GoFile upload failed' });
   }
 });
 
